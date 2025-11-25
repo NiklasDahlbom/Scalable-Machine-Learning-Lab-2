@@ -33,12 +33,17 @@ st.write(f"Running on **{device.upper()}**")
 @st.cache_resource(show_spinner=True)
 def load_models():
     st.info("Loading base model...")
+    import torch
+
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
     base_model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=BASE_MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
         dtype=DTYPE,
         load_in_4bit=LOAD_IN_4BIT,
-        token=HF_TOKEN
+        token=HF_TOKEN,
+        device=DEVICE  # <--- force device
     )
     base_model.to(device)
 
