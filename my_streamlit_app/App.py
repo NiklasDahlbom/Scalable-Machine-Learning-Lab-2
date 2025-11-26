@@ -1,103 +1,60 @@
 import streamlit as st
-import torch
-from transformers import AutoTokenizer
-from unsloth import FastLanguageModel
-from peft import PeftModel
+from huggingface_hub import hf_hub_download
+from llama_cpp import Llama
 
 # --- CONFIG ---
-BASE_MODEL_NAME = "unsloth/Llama-3.2-1B-bnb-4bit"  # base model from UnsLoth
-HF_LORA_CHECKPOINT = "Jeppcode/ScalableLab2"        # Hugging Face repo
-HF_SUBFOLDER = "checkpoint100"                      # LoRA checkpoint subfolder
+REPO_ID = "Jeppcode/ScalableLab2"  # Hugging Face repo
+FILENAME = "model-q4_k_m.gguf"       # GGUF quantized model file
 
-MAX_SEQ_LENGTH = 2048
-DTYPE = "float16"
-LOAD_IN_4BIT = True  # reduce memory usage
-
-st.set_page_config(page_title="LoRA Fine-Tuned Demo", layout="wide")
+st.set_page_config(page_title="CPU GGUF Demo", layout="wide")
+st.title("🖥 CPU GGUF Demo")
+st.markdown(
+    """
+This demo runs **CPU-only inference** using a GGUF quantized model directly from Hugging Face.
+It demonstrates creative text generation beyond a simple chatbot.
+"""
+)
 
 # --- Hugging Face token from Streamlit secrets ---
 HF_TOKEN = st.secrets["HF_TOKEN"]
 
-# --- HEADER ---
-st.title("🔥 Creative LoRA Demo")
-st.markdown("""
-This app demonstrates inference with your **fine-tuned LoRA model** on top of the base model.
-Compare the **base model** vs your **LoRA-adapted model** for creative tasks like Q&A, summarization, or text generation.
-""")
-
-# --- DEVICE ---
-device = "cuda" if torch.cuda.is_available() else "cpu"
-st.write(f"Running on **{device.upper()}**")
-
-# --- LOAD MODELS ---
-@st.cache_resource(show_spinner=True)
-def load_models():
-    st.info("Loading base model...")
-    import torch
-
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-    base_model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=BASE_MODEL_NAME,
-        max_seq_length=MAX_SEQ_LENGTH,
-        dtype=DTYPE,
-        load_in_4bit=LOAD_IN_4BIT,
-        token=HF_TOKEN,
-        device=DEVICE  # <--- force device
-    )
-    base_model.to(device)
-
-    st.info("Applying LoRA adapter from Hugging Face...")
-    tuned_model = PeftModel.from_pretrained(
-        base_model,
-        HF_LORA_CHECKPOINT,
-        subfolder=HF_SUBFOLDER,
+# --- Load model (cached) ---
+@st.cache_resource
+def load_model():
+    model_path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=FILENAME,
         use_auth_token=HF_TOKEN
     )
-    tuned_model.to(device)
+    return Llama(model_path=model_path)
 
-    # Enable faster inference in Unsloth
-    FastLanguageModel.for_inference(tuned_model)
+# Show spinner while downloading/loading model
+with st.spinner("Downloading and loading GGUF model..."):
+    model = load_model()
+st.success("✅ Model loaded!")
 
-    return base_model, tuned_model, tokenizer
+# --- User input ---
+prompt = st.text_area("Enter your prompt here:", "Write a short story about a friendly robot in Paris.")
 
-base_model, tuned_model, tokenizer = load_models()
+temperature = st.slider("Temperature", 0.1, 2.0, 1.0)
+max_tokens = st.slider("Max tokens", 32, 512, 128)
+top_p = st.slider("Top-p (nucleus sampling)", 0.1, 1.0, 0.9)
 
-# --- USER INPUT ---
-st.sidebar.header("Prompt Options")
-task = st.sidebar.selectbox("Choose a task", ["Creative Writing", "Q&A", "Summarize Text"])
-prompt_input = st.text_area("Enter your prompt here:", "Write a short story about a friendly robot in Paris.")
-
-temperature = st.sidebar.slider("Temperature", 0.1, 2.0, 1.0)
-max_tokens = st.sidebar.slider("Max Tokens", 64, 512, 128)
-top_p = st.sidebar.slider("Top-p (nucleus sampling)", 0.1, 1.0, 0.9)
-
-# --- GENERATE FUNCTION ---
-def generate_response(model, prompt: str):
-    inputs = tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}],
-        tokenize=True,
-        add_generation_prompt=True,
-        return_tensors="pt"
-    ).to(device)
-
-    outputs = model.generate(
-        input_ids=inputs,
-        max_new_tokens=max_tokens,
+# --- Generate function ---
+def generate_response(prompt_text: str):
+    resp = model(
+        prompt_text,
+        max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p
     )
-    return tokenizer.batch_decode(outputs)[0]
+    # Llama returns a dict with 'choices' containing 'text'
+    return resp["choices"][0]["text"]
 
-# --- RUN INFERENCE ---
+# --- Run inference ---
 if st.button("Generate"):
-    st.info("Generating text from the fine-tuned LoRA model...")
-    response = generate_response(tuned_model, prompt_input)
-    st.success("Done!")
-    st.subheader("Output from LoRA-adapted model:")
-    st.write(response)
-
-    st.info("Generating text from the base model for comparison...")
-    base_response = generate_response(base_model, prompt_input)
-    st.subheader("Output from base model:")
-    st.write(base_response)
+    with st.spinner("Generating text..."):
+        output = generate_response(prompt)
+    st.success("✅ Done!")
+    st.subheader("Output:")
+    st.write(output)
