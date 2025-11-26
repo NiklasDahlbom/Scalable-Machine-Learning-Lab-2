@@ -6,6 +6,11 @@ from llama_cpp import Llama
 REPO_ID = "Jeppcode/ScalableLab2"  # Hugging Face repo
 FILENAME = "model-q4_k_m.gguf"       # GGUF quantized model file
 
+# Fixed inference parameters
+TEMPERATURE = 1.0
+MAX_TOKENS = 128
+TOP_P = 0.9
+
 st.set_page_config(page_title="CPU GGUF Demo", layout="wide")
 st.title("🖥 CPU GGUF Demo")
 st.markdown(
@@ -36,19 +41,14 @@ st.success("✅ Model loaded!")
 # --- User input ---
 prompt = st.text_area("Enter your prompt here:", "Write a short story about a friendly robot in Paris.")
 
-temperature = st.slider("Temperature", 0.1, 2.0, 1.0)
-max_tokens = st.slider("Max tokens", 32, 512, 128)
-top_p = st.slider("Top-p (nucleus sampling)", 0.1, 1.0, 0.9)
-
 # --- Generate function ---
 def generate_response(prompt_text: str):
     resp = model(
         prompt_text,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p
+        max_tokens=MAX_TOKENS,
+        temperature=TEMPERATURE,
+        top_p=TOP_P
     )
-    # Llama returns a dict with 'choices' containing 'text'
     return resp["choices"][0]["text"]
 
 # --- Run inference ---
