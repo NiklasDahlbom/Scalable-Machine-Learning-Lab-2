@@ -1,44 +1,169 @@
 # Lab 2 - Fine-Tuning a Large Language Model
 
+## Students
+**Niklas Dahlbom and Jesper Malmgren**
+
+## URL to our Chatbot
+https://huggingface.co/spaces/JeppCodeNik/ChatBot
+
+---
+
 ## Overview
 
 In this lab we fine-tuned the open-source base model `unsloth/Llama-3.2-3B-Instruct` on Maxime Labonne's FineTome-100k instruction dataset using LoRA (Low-Rank Adaptation) with QLoRA quantization via Unsloth and `trl.SFTTrainer`. The training used the following hyperparameters:
 
-| Hyperparameter | Value |
-|----------------|-------|
-| `per_device_train_batch_size` | 2 |
-| `gradient_accumulation_steps` | 4 |
-| `num_train_epochs` | 1 |
-| `learning_rate` | 2e-4 |
-| `warmup_steps` | 5 |
-| `weight_decay` | 0.01 |
-| `optimizer` | adamw_8bit |
+| Hyperparameter | Value | Explanation |
+|----------------|-------|-------------|
+| `per_device_train_batch_size` | 2 | Number of examples processed at once. Limited by GPU memory. |
+| `gradient_accumulation_steps` | 4 | Accumulate gradients over 4 batches before updating weights. Effective batch size = 2 x 4 = 8. |
+| `num_train_epochs` | 1 | One full pass through the training data. |
+| `learning_rate` | 2e-4 | Step size for weight updates. Standard value for LoRA fine-tuning. |
+| `warmup_steps` | 5 | Gradually increase learning rate for first 5 steps to prevent early instability. |
+| `weight_decay` | 0.01 | L2 regularization to prevent overfitting. |
+| `optimizer` | adamw_8bit | Adam optimizer with weight decay, using 8-bit precision to save memory. |
 
 ---
 
-## Evaluation Methodology
+## Task 2: Improving Model Performance
 
-We evaluated both the base model and the fine-tuned model on **100 held-out examples** from a 15% test split of FineTome-100k. For each example we used the conversation history as input and treated the last assistant turn as the reference answer.
+This section describes approaches to improve model performance beyond our baseline fine-tuning.
 
-### Metrics Used
+### (a) Model-Centric Approach
 
-We used **ROUGE scores** (Recall-Oriented Understudy for Gisting Evaluation) to measure the overlap between model-generated responses and reference answers:
+A **model-centric approach** keeps the training data fixed and focuses on changing the model architecture, training configuration, or optimization procedure. The idea is that with the same data, we can achieve better results by finding better hyperparameters, using a more suitable model architecture, or optimizing the training process itself.
 
-- **ROUGE-1**: Measures unigram (single word) overlap between the generated text and reference. Higher scores indicate better word-level similarity.
-- **ROUGE-2**: Measures bigram (two consecutive words) overlap. This captures phrase-level similarity and is more sensitive to word order.
-- **ROUGE-L**: Measures the longest common subsequence between generated and reference text. This captures sentence-level structure and fluency.
+#### Hyperparameter Tuning
 
-All scores use the F-measure (harmonic mean of precision and recall) and range from 0 to 1, where higher is better.
+Hyperparameters control how the model learns. Finding optimal values can significantly impact performance:
 
-### Generation Settings
+**Learning Rate** is arguably the most important hyperparameter. It controls how much the model weights change with each update. If the learning rate is too high, the model may overshoot optimal values and become unstable. If too low, training becomes slow and may get stuck in suboptimal solutions. We used `2e-4`, which is a common default for LoRA, but sweeping over values like `1e-4`, `2e-4`, `5e-4` could find a better fit for our specific task.
 
-We used **deterministic generation** (greedy decoding with `do_sample=False`) for both models to ensure reproducible and comparable results. Each response was limited to 256 new tokens.
+**Number of Training Epochs** determines how many times the model sees the entire dataset. We only trained for 1 epoch due to time constraints. Training for 2-3 epochs could improve results, but risks overfitting (memorizing the training data rather than learning general patterns). Using early stopping based on validation loss would help find the sweet spot.
+
+**Batch Size and Gradient Accumulation** affect training stability. Larger batches provide more stable gradient estimates but require more memory. Our effective batch size is 8 (2 examples x 4 accumulation steps). Increasing this within memory constraints could lead to smoother training.
+
+**Warmup Steps** gradually increase the learning rate at the start of training. This prevents large, potentially harmful weight updates when the model hasn't yet learned the task structure. We used 5 steps, but 10-100 steps might improve stability.
+
+**Weight Decay** is a regularization technique that penalizes large weights, encouraging the model to find simpler solutions. Testing values like `0.001`, `0.01`, `0.1` could help control overfitting.
+
+#### LoRA Configuration
+
+LoRA (Low-Rank Adaptation) works by injecting small trainable matrices into the model instead of updating all weights. Key parameters include:
+
+**Rank (r)** controls the expressiveness of the adapter. Higher rank means the adapter can capture more complex patterns but uses more memory. Our default rank of 16 could be increased to 32 or 64 to allow more expressive updates.
+
+**alpha** controls how much the adapter contributes to the final output. Adjusting this parameter affects the magnitude of changes the fine-tuning introduces.
+
+**Target Modules** determine which parts of the model get LoRA adapters. Applying LoRA to attention layers only, MLP layers only, or both can yield different results depending on the task.
+
+#### Model Architecture
+
+**Base Model Selection** significantly impacts both quality and inference speed. We chose Llama-3.2-3B-Instruct as a balance between quality and the ability to run on CPU for inference. 
+
+**Quantization** trades precision for memory efficiency. We used 4-bit quantization (QLoRA), which allows training on limited GPU memory. Comparing 4-bit vs 8-bit quantization would reveal the quality-speed tradeoff.
 
 ---
 
-## Results
+### (b) Data-Centric Approach
 
-The fine-tuned model clearly outperformed the base model across all ROUGE metrics:
+A **data-centric approach** keeps the model and training configuration mostly fixed and focuses on improving or extending the training data. The philosophy is that model performance is often limited by data quality rather than model capacity. Better data leads to better models without architectural changes.
+
+#### Data Quality Improvements
+
+The quality of training data directly impacts what the model learns:
+
+**Deduplication** removes near-duplicate examples that can cause the model to overfit to specific patterns. If the same question-answer pair appears multiple times (perhaps with slight variations), the model may memorize it rather than learning generalizable skills.
+
+**Balancing Task Types** adjusts the distribution of examples based on the target application. If our chatbot primarily needs to handle explanatory questions, we should up-sample explanation examples and down-sample less relevant categories like code generation or creative writing.
+
+#### Additional Data Sources
+
+Augmenting FineTome-100k with specialized datasets can improve performance on specific capabilities:
+
+| Dataset | Focus Area | Potential Benefit |
+|---------|------------|-------------------|
+| OpenAssistant Conversations | Multi-turn dialogue | Better at handling follow-up questions and maintaining context |
+| GSM8K / MetaMath | Math reasoning | Improved step-by-step mathematical problem solving |
+| CodeAlpaca / Code-Feedback | Programming tasks | Better code generation and explanation |
+| FLAN Collection | Diverse NLP tasks | Broader coverage of different task types |
+| UltraChat | Long-form dialogue | Better handling of extended conversations |
+
+Looking at our evaluation examples, the model sometimes struggles with complex mathematical reasoning. Adding GSM8K or MetaMath to the training data would likely improve this without hurting general performance.
+
+#### Domain-Specific Fine-Tuning
+
+**Curriculum Learning** structures training from simple to complex. Starting with general instructions and gradually shifting to more specialized or difficult examples can help the model build foundational skills before tackling harder tasks.
+
+**Task-Specific Adapters** train separate LoRA adapters for different domains (math, code, creative writing). At inference time, we can select the appropriate adapter based on the user's query. This allows specialization without degrading general performance.
+
+#### Data Alignment
+
+**Matching Output Format** ensures training examples demonstrate the desired output style. If the chatbot should provide step-by-step reasoning, the training data should contain examples with that format.
+
+**User Feedback Loop** uses real user interactions (when permitted and anonymized) to create a fine-tuning set that reflects actual usage patterns. This closes the gap between training data and real-world deployment.
+
+---
+
+## Results of Improvement
+
+To demonstrate improvement, we evaluated both the base model and our fine-tuned model using ROUGE scores on held-out test data. This section explains our evaluation methodology and presents the results.
+
+### What is ROUGE?
+
+**ROUGE** (Recall-Oriented Understudy for Gisting Evaluation) is a standard metric for evaluating text generation. It measures how much the generated text overlaps with a reference answer.
+
+The core idea is simple: if a model's output contains the same words and phrases as a known good answer, it's probably a good output. ROUGE counts these overlaps and produces a score between 0 and 1, where higher means more similar to the reference.
+
+#### Precision, Recall, and F-measure
+
+ROUGE uses concepts from information retrieval:
+
+**Precision** answers: "Of everything the model said, how much was correct?"
+```
+Precision = matching words / total words in generated text
+```
+
+**Recall** answers: "Of everything that should be said, how much did the model include?"
+```
+Recall = matching words / total words in reference text
+```
+
+**F-measure** balances both. A model that outputs the entire dictionary would have perfect recall (it contains all reference words) but terrible precision (lots of irrelevant words). F-measure penalizes both extremes.
+```
+F-measure = 2 × (Precision × Recall) / (Precision + Recall)
+```
+
+#### The Three ROUGE Metrics
+
+| Metric | What It Measures | Why It Matters |
+|--------|-----------------|----------------|
+| **ROUGE-1** | Single word (unigram) overlap | Captures vocabulary similarity - does the model use the right words? |
+| **ROUGE-2** | Word pair (bigram) overlap | Captures phrase-level similarity - does the model use the right phrases? |
+| **ROUGE-L** | Longest common subsequence | Captures sentence structure - are words in the right order? |
+
+**ROUGE-2 is particularly informative** because it measures phrase-level patterns. A model might use correct individual words but combine them incorrectly. ROUGE-2 catches this.
+
+#### Limitations of ROUGE
+
+ROUGE only measures surface-level overlap, not semantic meaning:
+- "The dog chased the cat" vs "The cat was pursued by the canine" = low ROUGE but same meaning
+- Doesn't understand synonyms ("big" vs "large" = no match)
+- Penalizes valid paraphrasing
+
+Despite these limitations, ROUGE is useful for comparing two models on the same task. Relative improvement is meaningful even if absolute scores aren't perfect.
+
+### Evaluation Methodology
+
+We evaluated both models on **100 held-out examples** from a 15% test split of FineTome-100k. For each example, we used the conversation history as input and treated the last assistant turn as the reference answer.
+
+**Generation Settings:**
+- Deterministic generation (`do_sample=False`) ensures reproducible results
+- Maximum 256 new tokens per response
+- Same settings for both models to ensure fair comparison
+
+### Results
+
+The fine-tuned model outperformed the base model across all ROUGE metrics:
 
 | Metric | Base Model | Fine-Tuned Model | Improvement |
 |--------|------------|------------------|-------------|
@@ -46,7 +171,13 @@ The fine-tuned model clearly outperformed the base model across all ROUGE metric
 | ROUGE-2 | 0.2255 | 0.2849 | **+26.4%** |
 | ROUGE-L | 0.2856 | 0.3521 | **+23.3%** |
 
-These results demonstrate that even a single epoch of LoRA fine-tuning on FineTome-100k produces substantial improvements in response quality. The largest gain was in ROUGE-2 (+26.4%), indicating that the fine-tuned model better captures phrase-level patterns from the training data.
+**Key Findings:**
+
+1. **All metrics improved significantly** after just one epoch of LoRA fine-tuning, demonstrating that the approach works.
+
+2. **ROUGE-2 showed the largest improvement (+26.4%)**, indicating that the fine-tuned model learned to use similar phrases and word combinations as the training data. This is more valuable than just using correct individual words.
+
+3. **ROUGE-L improved by 23.3%**, showing better sentence structure and fluency in the fine-tuned model's responses.
 
 ### Response Length Analysis
 
@@ -55,77 +186,31 @@ These results demonstrate that even a single epoch of LoRA fine-tuning on FineTo
 | Mean length (words) | 165.0 | 155.7 | 216.3 |
 | Median length (words) | 176.0 | 165.5 | 199.0 |
 
-The fine-tuned model produces slightly more concise responses while achieving higher ROUGE scores, suggesting improved information density.
+The fine-tuned model produces **shorter responses** (156 vs 165 words) while achieving **higher ROUGE scores**. This suggests improved information density - the model says more relevant content with fewer words.
 
----
+### Qualitative Observations
 
-## Improving Model Performance
+From examining the example outputs in the Appendix:
 
-### (a) Model-Centric Approach
+1. **Base model over-formats**: Often adds unnecessary headers, bold text, and numbered lists even when not requested. Example 1 shows the base model adding "**What is Photosynthesis?**" headers when asked for a simple explanation.
 
-A model-centric approach keeps the data fixed and focuses on changing the model architecture, training configuration, or optimization procedure. Below are concrete strategies for further improvement:
+2. **Fine-tuned model matches reference style**: Produces more direct, conversational responses that align with the training data format.
 
-#### Hyperparameter Tuning
+3. **Both models struggle with complex math**: Neither model consistently solves multi-step mathematical problems correctly, suggesting math-specific data augmentation would help.
 
-- **Learning rate**: Sweep over values such as `1e-4`, `2e-4`, `5e-4` to find the optimal learning rate. Our current setting of `2e-4` is a reasonable default but may not be optimal.
-- **Learning rate schedule**: Experiment with cosine decay or cosine with warm restarts instead of constant learning rate.
-- **Training epochs**: Train for 2–3 epochs with early stopping based on validation loss to potentially improve convergence.
-- **Batch size**: Increase effective batch size (via `gradient_accumulation_steps`) within memory constraints for more stable gradients.
-- **Warmup steps**: Adjust warmup duration (e.g., 10–100 steps) to improve training stability.
-- **Weight decay**: Test different regularization strengths (e.g., `0.001`, `0.01`, `0.1`) to control overfitting.
-
-#### LoRA Configuration
-
-- **Rank (r)**: Increase LoRA rank (e.g., from 16 to 32 or 64) to allow more expressive adapter updates, at the cost of increased memory.
-- **Alpha scaling**: Adjust the LoRA alpha parameter to control the magnitude of adapter contributions.
-- **Target modules**: Experiment with applying LoRA to different layer types (attention only, MLP layers, or both) and different layer ranges.
-
-#### Model Architecture
-
-- **Base model selection**: Compare different foundation models such as `Llama-3.2-1B-Instruct` (faster inference) or `Llama-3.1-8B-Instruct` (potentially higher quality but slower).
-- **Quantization**: Compare 4-bit (QLoRA) vs 8-bit quantization to understand the quality-speed tradeoff.
-
-### (b) Data-Centric Approach
-
-A data-centric approach keeps the model and training loop mostly fixed and focuses on improving or extending the training data. Below are concrete strategies:
-
-#### Data Quality Improvements
-
-- **Filter low-quality examples**: Remove very short, unclear, or noisy instruction-response pairs from FineTome-100k to increase average signal per batch.
-- **Deduplicate**: Remove near-duplicate examples that may cause the model to overfit to specific patterns.
-- **Balance task types**: If the target application focuses on specific capabilities (e.g., reasoning, coding, explanation), up-sample those categories and down-sample less relevant ones.
-
-#### Additional Data Sources
-
-Augment FineTome-100k with other high-quality open-source instruction datasets:
-
-| Dataset | Focus Area | Potential Benefit |
-|---------|------------|-------------------|
-| OpenAssistant Conversations | Multi-turn dialogue | Improved conversational ability |
-| GSM8K / MetaMath | Math reasoning | Better mathematical problem-solving |
-| CodeAlpaca / Code-Feedback | Programming tasks | Improved code generation |
-| FLAN Collection | Diverse NLP tasks | Broader task coverage |
-| UltraChat | Long-form dialogue | Better handling of extended conversations |
-
-#### Domain-Specific Fine-Tuning
-
-- **Curriculum learning**: Start training on general instructions, then gradually shift to more specialized or difficult examples.
-- **Task-specific adapters**: Train separate LoRA adapters for different domains (math, code, creative writing) and select the appropriate adapter at inference time.
-
-#### Data Alignment
-
-- **Match UI format**: If the final application expects specific output formats (e.g., step-by-step reasoning, JSON responses), construct or filter training examples that demonstrate these formats.
-- **User feedback loop**: In production, log anonymized user interactions (if permitted) to create a fine-tuning set that reflects real usage patterns.
+4. **Creative writing improved**: The fine-tuned model's stories follow similar structures to the reference (e.g., "Once upon a time..." openings in Example 6).
 
 ---
 
 ## Conclusion
 
-Our fine-tuning pipeline demonstrates measurable improvements over the base model, with ROUGE scores increasing by 12–26% on a held-out test set. The model-centric and data-centric strategies outlined above provide clear directions for further performance gains. The most promising next steps would be:
+Our fine-tuning pipeline demonstrates measurable improvements over the base model, with ROUGE scores increasing by 12-26% on a held-out test set. The largest gain was in ROUGE-2 (phrase-level similarity), indicating the model learned to produce responses that match the style and phrasing of the training data.
 
-1. **Hyperparameter sweep** on learning rate and number of epochs
-2. **Increase LoRA rank** to allow more expressive updates
-3. **Mix in domain-specific datasets** (e.g., math reasoning or code) to improve performance on specialized tasks
+**Most promising next steps:**
+
+1. **Hyperparameter sweep** on learning rate and number of epochs (model-centric)
+2. **Increase LoRA rank** from 16 to 32 or 64 for more expressive updates (model-centric)
+3. **Add math reasoning datasets** like GSM8K to improve mathematical problem-solving (data-centric)
 
 ---
 
